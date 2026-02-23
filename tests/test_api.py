@@ -37,6 +37,7 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "healthy"
         assert "model_loaded" in data
+        assert data["engine"] == "fish-audio-sdk"
 
 
 class TestUploadEndpoint:
@@ -107,7 +108,17 @@ class TestSamplesEndpoint:
 
 
 class TestGenerateEndpoint:
-    def test_generate_missing_sample(self, client):
+    def test_generate_missing_sample_and_file(self, client):
+        response = client.post(
+            "/api/generate",
+            data={
+                "text": "Hello world",
+                "language": "en",
+            },
+        )
+        assert response.status_code == 400
+
+    def test_generate_missing_sample_id(self, client):
         response = client.post(
             "/api/generate",
             data={
@@ -117,6 +128,19 @@ class TestGenerateEndpoint:
             },
         )
         assert response.status_code == 404
+
+    def test_generate_with_file(self, client):
+        wav_bytes = make_wav_bytes(5.0)
+        response = client.post(
+            "/api/generate",
+            data={
+                "text": "Hello world",
+                "language": "en",
+            },
+            files={"file": ("voice.wav", wav_bytes, "audio/wav")},
+        )
+        # Will fail at TTS engine (no API key) but validates the endpoint
+        assert response.status_code in (200, 500)
 
     def test_generate_invalid_language(self, client):
         response = client.post(

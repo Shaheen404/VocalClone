@@ -3,6 +3,7 @@
 Provides REST API endpoints for:
 - Uploading reference voice samples (WAV/MP3)
 - Generating TTS output in English and Urdu using cloned voice
+  via the Fish Audio SDK
 - Health check and status endpoints
 """
 
@@ -36,9 +37,7 @@ voice_samples: Dict[str, Dict] = {}
 
 # TTS Engine (initialized at startup)
 tts_engine = TTSEngine(
-    model_name=os.getenv("TTS_MODEL", "fishaudio/fish-speech-1.5"),
-    use_gpu=os.getenv("USE_GPU", "true").lower() == "true",
-    quantize=os.getenv("QUANTIZE", "4bit"),
+    api_key=os.getenv("FISH_AUDIO_API_KEY", ""),
 )
 
 # Output directory for generated audio
@@ -48,14 +47,14 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Load TTS model on application startup."""
+    """Initialise Fish Audio SDK session on application startup."""
     logger.info("Starting VocalClone API...")
     success = tts_engine.load_model()
     if not success:
         logger.warning(
-            "TTS model not loaded. Will use edge-tts fallback. "
-            "For voice cloning, ensure a GPU is available and the "
-            "model can be downloaded."
+            "Fish Audio SDK session not initialised. "
+            "Set the FISH_AUDIO_API_KEY environment variable to enable "
+            "voice cloning."
         )
     yield
 
@@ -82,7 +81,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": tts_engine.is_loaded(),
-        "model_name": tts_engine.model_name,
+        "engine": "fish-audio-sdk",
     }
 
 
@@ -131,6 +130,7 @@ async def upload_voice_sample(file: UploadFile = File(...)):
         "sr": sr,
         "filename": file.filename,
         "duration": len(audio) / sr,
+        "raw_bytes": file_bytes,
     }
 
     logger.info("Voice sample uploaded: %s (%.1fs)",
@@ -146,16 +146,21 @@ async def upload_voice_sample(file: UploadFile = File(...)):
 
 @app.post("/api/generate")
 async def generate_speech(
-    sample_id: str = Form(...),
     text: str = Form(...),
     language: str = Form("en"),
+    file: UploadFile = File(None),
+    sample_id: str = Form(None),
 ):
     """Generate speech using the cloned voice.
 
+    Accepts either a direct voice-sample file upload *or* a
+    ``sample_id`` from a previous ``/api/upload`` call.
+
     Args:
-        sample_id: ID of the uploaded voice sample.
         text: Text to synthesize.
         language: Language code ('en' for English, 'ur' for Urdu).
+        file: Voice sample audio file (WAV/MP3).
+        sample_id: ID of a previously uploaded voice sample.
     """
     if language not in ("en", "ur"):
         raise HTTPException(
@@ -172,22 +177,39 @@ async def generate_speech(
             detail="Text too long. Maximum 5000 characters.",
         )
 
-    if sample_id not in voice_samples:
+    # Resolve reference audio bytes ---------------------------------
+    reference_bytes: bytes | None = None
+
+    if file is not None and file.filename:
+        # Direct file upload in this request
+        if not validate_audio_file(file.filename):
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file format. Please upload a WAV or MP3 file.",
+            )
+        reference_bytes = await file.read()
+        if len(reference_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty file uploaded.")
+    elif sample_id is not None:
+        # Reference a previously uploaded sample
+        if sample_id not in voice_samples:
+            raise HTTPException(
+                status_code=404,
+                detail="Voice sample not found. Please upload a sample first.",
+            )
+        reference_bytes = voice_samples[sample_id]["raw_bytes"]
+    else:
         raise HTTPException(
-            status_code=404,
-            detail="Voice sample not found. Please upload a sample first.",
+            status_code=400,
+            detail="Provide either a voice sample file or a sample_id.",
         )
 
-    sample = voice_samples[sample_id]
+    logger.info("Generating speech: lang=%s, text_len=%d", language, len(text))
 
-    logger.info("Generating speech: lang=%s, text_len=%d, sample=%s",
-                language, len(text), sample_id)
-
-    audio_bytes = tts_engine.generate_speech(
+    audio_bytes = tts_engine.generate_voice(
         text=text.strip(),
+        reference_audio_bytes=reference_bytes,
         language=language,
-        reference_audio=sample["audio"],
-        sr=sample["sr"],
     )
 
     if audio_bytes is None:

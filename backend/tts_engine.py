@@ -1,21 +1,17 @@
-"""TTS Engine for voice cloning using Fish Speech.
+"""TTS Engine for voice cloning using Fish Audio SDK.
 
-This module provides the voice cloning and text-to-speech generation
-functionality. It abstracts the model loading (with quantization support
-for free-tier GPUs) and exposes a simple interface for generating speech.
-
-Supported models:
-- Fish Speech V1.5 (primary, cross-lingual English + Urdu)
-- Fallback to edge-tts for environments without GPU
+This module provides voice cloning and text-to-speech generation via the
+Fish Audio cloud API.  It keeps the local installation lightweight (no
+PyTorch / CUDA wheels) while supporting cross-lingual English + Urdu
+synthesis with reference-audio voice cloning.
 """
 
-import io
 import logging
 import os
-import tempfile
+import unicodedata
 from typing import Optional
 
-import numpy as np
+from fish_audio_sdk import ReferenceAudio, Session, TTSRequest
 
 logger = logging.getLogger(__name__)
 
@@ -27,206 +23,123 @@ URDU_CHAR_NORMALIZATIONS = {
 
 
 class TTSEngine:
-    """Text-to-Speech engine with voice cloning capability."""
+    """Text-to-Speech engine backed by the Fish Audio SDK."""
 
-    def __init__(self, model_name: str = "fishaudio/fish-speech-1.5",
-                 use_gpu: bool = True, quantize: str = "4bit"):
+    def __init__(self, api_key: Optional[str] = None,
+                 base_url: str = "https://api.fish.audio"):
         """Initialize the TTS engine.
 
         Args:
-            model_name: HuggingFace model identifier.
-            use_gpu: Whether to attempt GPU acceleration.
-            quantize: Quantization mode ('4bit', '8bit', or 'none').
+            api_key: Fish Audio API key.  Falls back to the
+                     ``FISH_AUDIO_API_KEY`` environment variable.
+            base_url: Fish Audio API base URL.
         """
-        self.model_name = model_name
-        self.use_gpu = use_gpu
-        self.quantize = quantize
-        self.model = None
-        self.processor = None
-        self._device = "cpu"
-        self._model_loaded = False
+        self.api_key = api_key or os.getenv("FISH_AUDIO_API_KEY", "")
+        self.base_url = base_url
+        self._session: Optional[Session] = None
+        self._ready = False
 
     def load_model(self) -> bool:
-        """Load the TTS model with optional quantization.
+        """Initialise the Fish Audio SDK session.
 
-        Returns True if model loaded successfully, False otherwise.
-        Uses 4-bit/8-bit quantization for free-tier T4 GPU compatibility.
+        Returns True when the API key is configured, False otherwise.
         """
+        if not self.api_key:
+            logger.warning(
+                "FISH_AUDIO_API_KEY not set. TTS generation will be "
+                "unavailable until a valid API key is provided."
+            )
+            self._ready = False
+            return False
+
         try:
-            import torch
-            from transformers import AutoModel, AutoProcessor
-
-            device = "cpu"
-            if self.use_gpu and torch.cuda.is_available():
-                device = "cuda"
-
-            load_kwargs = {"trust_remote_code": True}
-
-            if device == "cuda" and self.quantize != "none":
-                from transformers import BitsAndBytesConfig
-
-                if self.quantize == "4bit":
-                    load_kwargs["quantization_config"] = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.float16,
-                        bnb_4bit_use_double_quant=True,
-                    )
-                elif self.quantize == "8bit":
-                    load_kwargs["quantization_config"] = BitsAndBytesConfig(
-                        load_in_8bit=True,
-                    )
-            else:
-                load_kwargs["device_map"] = device
-
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_name, trust_remote_code=True
+            self._session = Session(
+                apikey=self.api_key,
+                base_url=self.base_url,
             )
-            self.model = AutoModel.from_pretrained(
-                self.model_name, **load_kwargs
-            )
-            self._device = device
-            self._model_loaded = True
-            logger.info("Model %s loaded on %s with %s quantization",
-                        self.model_name, device, self.quantize)
+            self._ready = True
+            logger.info("Fish Audio SDK session initialised "
+                        "(base_url=%s)", self.base_url)
             return True
-
         except Exception as e:
-            logger.warning("Failed to load model %s: %s. "
-                           "Falling back to edge-tts.", self.model_name, e)
-            self._model_loaded = False
+            logger.error("Failed to initialise Fish Audio session: %s", e)
+            self._ready = False
             return False
 
     def is_loaded(self) -> bool:
-        """Check if the TTS model is loaded."""
-        return self._model_loaded
-
-    def extract_speaker_embedding(self, reference_audio: np.ndarray,
-                                  sr: int) -> Optional[np.ndarray]:
-        """Extract speaker embedding from reference audio.
-
-        Args:
-            reference_audio: Numpy array of the reference voice sample.
-            sr: Sample rate of the reference audio.
-
-        Returns:
-            Speaker embedding as numpy array, or None on failure.
-        """
-        if not self._model_loaded:
-            logger.warning("Model not loaded; cannot extract embedding.")
-            return None
-
-        try:
-            import torch
-
-            audio_tensor = torch.FloatTensor(reference_audio).unsqueeze(0)
-            if self._device == "cuda":
-                audio_tensor = audio_tensor.cuda()
-
-            with torch.no_grad():
-                embedding = self.model.encode_speaker(audio_tensor, sr)
-            return embedding.cpu().numpy() if hasattr(embedding, 'cpu') else embedding
-
-        except Exception as e:
-            logger.error("Speaker embedding extraction failed: %s", e)
-            return None
+        """Check whether the SDK session is ready."""
+        return self._ready
 
     def normalize_urdu_text(self, text: str) -> str:
         """Normalize Urdu text for better phonetic accuracy.
 
-        Applies character normalization and handles common
-        transliteration issues to reduce robotic output.
+        Applies Unicode NFC normalization (prevents character
+        disconnection on Python 3.13), character-level mappings, and
+        Urdu punctuation spacing.
         """
+        text = unicodedata.normalize("NFC", text)
         for old, new in URDU_CHAR_NORMALIZATIONS.items():
             text = text.replace(old, new)
         # Ensure proper spacing around Urdu punctuation
         text = text.replace("\u06d4", ". ")  # Urdu full stop
         return text.strip()
 
-    def generate_speech(self, text: str, language: str,
-                        reference_audio: Optional[np.ndarray] = None,
-                        sr: int = 16000) -> Optional[bytes]:
-        """Generate speech audio from text using the cloned voice.
+    def generate_voice(self, text: str,
+                       reference_audio_bytes: bytes,
+                       language: str = "en",
+                       output_format: str = "wav") -> Optional[bytes]:
+        """Generate speech with voice cloning via the Fish Audio SDK.
 
         Args:
-            text: Text to synthesize (English or Urdu).
+            text: Text to synthesise (English or Urdu).
+            reference_audio_bytes: Raw bytes of the reference voice
+                sample (WAV or MP3).
             language: Language code ('en' or 'ur').
-            reference_audio: Reference voice sample for cloning.
-            sr: Sample rate of reference audio.
+            output_format: Output audio format ('wav' or 'mp3').
 
         Returns:
-            WAV audio bytes or None on failure.
+            Audio bytes in the requested format, or None on failure.
         """
         if language == "ur":
             text = self.normalize_urdu_text(text)
 
-        # Try model-based generation first
-        if self._model_loaded and reference_audio is not None:
-            return self._generate_with_model(text, language,
-                                             reference_audio, sr)
+        if not self._ready or self._session is None:
+            logger.error("Fish Audio session not initialised.")
+            return None
 
-        # Fallback to edge-tts (no cloning, but functional)
-        return self._generate_with_edge_tts(text, language)
-
-    def _generate_with_model(self, text: str, language: str,
-                             reference_audio: np.ndarray,
-                             sr: int) -> Optional[bytes]:
-        """Generate speech using the loaded model."""
         try:
-            import torch
-            import soundfile as sf
+            request = TTSRequest(
+                text=text,
+                format=output_format,
+                references=[
+                    ReferenceAudio(audio=reference_audio_bytes, text=""),
+                ],
+            )
 
-            audio_tensor = torch.FloatTensor(reference_audio).unsqueeze(0)
-            if self._device == "cuda":
-                audio_tensor = audio_tensor.cuda()
+            audio_chunks: list[bytes] = []
+            for chunk in self._session.tts(request):
+                audio_chunks.append(chunk)
 
-            with torch.no_grad():
-                output = self.model.generate(
-                    text=text,
-                    language=language,
-                    speaker_audio=audio_tensor,
-                    speaker_sr=sr,
-                )
+            if not audio_chunks:
+                logger.error("Fish Audio SDK returned no audio data.")
+                return None
 
-            if hasattr(output, 'cpu'):
-                output_np = output.cpu().numpy().squeeze()
-            else:
-                output_np = np.array(output).squeeze()
-
-            buf = io.BytesIO()
-            sf.write(buf, output_np, sr, format="WAV", subtype="PCM_16")
-            buf.seek(0)
-            return buf.read()
+            return b"".join(audio_chunks)
 
         except Exception as e:
-            logger.error("Model generation failed: %s", e)
-            return self._generate_with_edge_tts(text, language)
-
-    def _generate_with_edge_tts(self, text: str,
-                                language: str) -> Optional[bytes]:
-        """Fallback TTS using edge-tts (no voice cloning)."""
-        try:
-            import asyncio
-            import edge_tts
-
-            voice = "en-US-AriaNeural" if language == "en" else "ur-PK-AsadNeural"
-            communicate = edge_tts.Communicate(text, voice)
-
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            tmp_path = tmp.name
-            tmp.close()
-
-            try:
-                asyncio.run(communicate.save(tmp_path))
-                with open(tmp_path, "rb") as f:
-                    return f.read()
-            finally:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-
-        except ImportError:
-            logger.error("edge-tts not installed. Install with: "
-                         "pip install edge-tts")
+            logger.error("Fish Audio TTS generation failed: %s", e)
             return None
-        except Exception as e:
-            logger.error("edge-tts generation failed: %s", e)
+
+    # Keep backward-compatible alias used by existing call-sites
+    def generate_speech(self, text: str, language: str,
+                        reference_audio_bytes: Optional[bytes] = None,
+                        **_kwargs) -> Optional[bytes]:
+        """Backward-compatible wrapper around ``generate_voice``."""
+        if reference_audio_bytes is None:
+            logger.error("Reference audio is required for voice cloning.")
             return None
+        return self.generate_voice(
+            text=text,
+            reference_audio_bytes=reference_audio_bytes,
+            language=language,
+        )

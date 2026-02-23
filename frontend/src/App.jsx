@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback } from 'react';
+import axios from 'axios';
 
 const API_BASE = '/api';
 
 export default function App() {
-  const [sampleId, setSampleId] = useState(null);
+  const [sampleFile, setSampleFile] = useState(null);
   const [sampleInfo, setSampleInfo] = useState(null);
   const [text, setText] = useState('');
   const [language, setLanguage] = useState('en');
@@ -23,50 +24,49 @@ export default function App() {
     formData.append('file', file);
 
     try {
-      const res = await fetch(`${API_BASE}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Upload failed');
-      setSampleId(data.sample_id);
+      const { data } = await axios.post(`${API_BASE}/upload`, formData);
+      setSampleFile(file);
       setSampleInfo(data);
     } catch (err) {
-      setError(err.message);
+      setError(err.response?.data?.detail || err.message || 'Upload failed');
     } finally {
       setUploading(false);
     }
   }, []);
 
   const handleGenerate = useCallback(async () => {
-    if (!sampleId || !text.trim()) return;
+    if (!sampleFile || !text.trim()) return;
     setLoading(true);
     setError(null);
     setAudioUrl(null);
 
     const formData = new FormData();
-    formData.append('sample_id', sampleId);
+    formData.append('file', sampleFile);
     formData.append('text', text);
     formData.append('language', language);
 
     try {
-      const res = await fetch(`${API_BASE}/generate`, {
-        method: 'POST',
-        body: formData,
+      const { data } = await axios.post(`${API_BASE}/generate`, formData, {
+        responseType: 'blob',
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || 'Generation failed');
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(data);
       setAudioUrl(url);
     } catch (err) {
-      setError(err.message);
+      if (err.response?.data instanceof Blob) {
+        const text = await err.response.data.text();
+        try {
+          const json = JSON.parse(text);
+          setError(json.detail || 'Generation failed');
+        } catch {
+          setError('Generation failed');
+        }
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Generation failed');
+      }
     } finally {
       setLoading(false);
     }
-  }, [sampleId, text, language]);
+  }, [sampleFile, text, language]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -174,7 +174,7 @@ export default function App() {
                 <p className="text-sm text-gray-400">{sampleInfo.duration}s duration</p>
               </div>
               <button
-                onClick={() => { setSampleId(null); setSampleInfo(null); setAudioUrl(null); }}
+                onClick={() => { setSampleFile(null); setSampleInfo(null); setAudioUrl(null); }}
                 className="text-gray-400 hover:text-white text-sm px-3 py-1 border border-gray-700 rounded-lg hover:border-gray-500 transition"
               >
                 Replace
@@ -244,7 +244,7 @@ export default function App() {
 
           <button
             onClick={handleGenerate}
-            disabled={!sampleId || !text.trim() || loading}
+            disabled={!sampleFile || !text.trim() || loading}
             className="w-full py-3 bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500
                        hover:to-brand-600 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed
                        rounded-xl font-semibold transition-all duration-300 flex items-center justify-center gap-2"
