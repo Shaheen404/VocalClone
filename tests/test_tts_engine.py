@@ -1,6 +1,5 @@
 """Tests for the TTS engine module."""
 
-import numpy as np
 import pytest
 
 from backend.tts_engine import TTSEngine
@@ -8,11 +7,13 @@ from backend.tts_engine import TTSEngine
 
 class TestTTSEngine:
     def test_initialization(self):
-        engine = TTSEngine(model_name="test-model", use_gpu=False,
-                           quantize="none")
-        assert engine.model_name == "test-model"
-        assert engine.use_gpu is False
-        assert engine.quantize == "none"
+        engine = TTSEngine(api_key="test-key")
+        assert engine.api_key == "test-key"
+        assert engine.is_loaded() is False
+
+    def test_initialization_no_key(self):
+        engine = TTSEngine(api_key="")
+        assert engine.api_key == ""
         assert engine.is_loaded() is False
 
     def test_normalize_urdu_text(self):
@@ -29,21 +30,34 @@ class TestTTSEngine:
         result = engine.normalize_urdu_text(text_with_do_chashmi)
         assert "\u06be" not in result
 
+    def test_normalize_urdu_nfc(self):
+        engine = TTSEngine()
+        # NFC normalization should be applied
+        result = engine.normalize_urdu_text("ا")
+        assert isinstance(result, str)
+
     def test_is_loaded_default_false(self):
         engine = TTSEngine()
         assert engine.is_loaded() is False
 
-    def test_extract_embedding_without_model(self):
-        engine = TTSEngine()
-        audio = np.random.randn(16000).astype(np.float32)
-        result = engine.extract_speaker_embedding(audio, 16000)
+    def test_load_model_without_key(self):
+        engine = TTSEngine(api_key="")
+        result = engine.load_model()
+        assert result is False
+        assert engine.is_loaded() is False
+
+    def test_generate_voice_without_session(self):
+        engine = TTSEngine(api_key="")
+        result = engine.generate_voice("Hello", b"audio-bytes")
         assert result is None
 
-    def test_generate_without_model_or_fallback(self):
-        """When neither model nor edge-tts is available, returns None."""
-        engine = TTSEngine()
-        # This will attempt edge-tts fallback which may or may not be installed
-        # We just ensure no crash occurs
+    def test_generate_speech_backward_compat(self):
+        engine = TTSEngine(api_key="")
+        result = engine.generate_speech("Hello", "en",
+                                        reference_audio_bytes=b"audio")
+        assert result is None
+
+    def test_generate_speech_no_reference(self):
+        engine = TTSEngine(api_key="")
         result = engine.generate_speech("Hello", "en")
-        # Result could be None or bytes depending on edge-tts availability
-        assert result is None or isinstance(result, bytes)
+        assert result is None

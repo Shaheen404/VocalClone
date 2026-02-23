@@ -2,6 +2,7 @@
 
 import io
 import os
+import subprocess
 import tempfile
 from typing import Tuple
 
@@ -23,30 +24,48 @@ def load_audio(file_bytes: bytes, filename: str) -> Tuple[np.ndarray, int]:
     """Load audio from bytes and return numpy array and sample rate.
 
     Resamples to TARGET_SAMPLE_RATE if needed and converts to mono.
+    Uses ffmpeg for MP3 conversion (must be on the system PATH).
     """
     import soundfile as sf
 
-    buf = io.BytesIO(file_bytes)
     ext = os.path.splitext(filename)[1].lower()
 
     if ext == ".mp3":
-        import librosa
+        # Convert MP3 to WAV via ffmpeg
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_in:
+            tmp_in.write(file_bytes)
+            tmp_in_path = tmp_in.name
 
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
+        tmp_out_path = tmp_in_path.replace(".mp3", ".wav")
         try:
-            audio, sr = librosa.load(tmp_path, sr=TARGET_SAMPLE_RATE, mono=True)
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", tmp_in_path,
+                    "-ar", str(TARGET_SAMPLE_RATE),
+                    "-ac", "1",
+                    tmp_out_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            audio, sr = sf.read(tmp_out_path, dtype="float32")
         finally:
-            os.unlink(tmp_path)
+            for p in (tmp_in_path, tmp_out_path):
+                if os.path.exists(p):
+                    os.unlink(p)
     else:
+        buf = io.BytesIO(file_bytes)
         audio, sr = sf.read(buf, dtype="float32")
         if audio.ndim > 1:
             audio = np.mean(audio, axis=1)
         if sr != TARGET_SAMPLE_RATE:
-            import librosa
-
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SAMPLE_RATE)
+            # Resample using linear interpolation (lightweight, no librosa)
+            duration = len(audio) / sr
+            target_len = int(duration * TARGET_SAMPLE_RATE)
+            indices = np.linspace(0, len(audio) - 1, target_len)
+            audio = np.interp(indices, np.arange(len(audio)), audio).astype(
+                np.float32
+            )
             sr = TARGET_SAMPLE_RATE
 
     return audio, sr
