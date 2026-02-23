@@ -37,7 +37,7 @@ class TTSEngine:
         """
         try:
             if not self.api_key:
-                logger.error("OPENAI_API_KEY not found in environment.")
+                logger.error("OPENAI_API_KEY not configured.")
                 return False
             self._client = OpenAI(api_key=self.api_key)
             self._ready = True
@@ -64,7 +64,7 @@ class TTSEngine:
         return text.strip()
 
     def generate_voice(self, text: str,
-                       reference_audio_bytes: bytes = None,
+                       reference_audio_bytes: Optional[bytes] = None,
                        language: str = "en") -> Optional[bytes]:
         """Generates audio using OpenAI TTS-1-HD model.
 

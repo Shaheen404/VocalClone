@@ -119,7 +119,7 @@ class TestGenerateEndpoint:
         # OpenAI TTS does not require reference audio, so the request
         # reaches the engine.  Without a valid API key the engine
         # returns None → 500.
-        assert response.status_code in (200, 500)
+        assert response.status_code == 500
 
     def test_generate_missing_sample_id(self, client):
         response = client.post(
