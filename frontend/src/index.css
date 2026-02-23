@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.drop-zone {
+  @apply border-2 border-dashed border-gray-600 rounded-2xl p-8 text-center
+         transition-all duration-300 cursor-pointer;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  @apply border-brand-500 bg-brand-500/10;
+}
