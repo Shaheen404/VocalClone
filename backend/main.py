@@ -2,8 +2,7 @@
 
 Provides REST API endpoints for:
 - Uploading reference voice samples (WAV/MP3)
-- Generating TTS output in English and Urdu using cloned voice
-  via the Fish Audio SDK
+- Generating TTS output in English and Urdu using OpenAI TTS
 - Health check and status endpoints
 """
 
@@ -37,7 +36,7 @@ voice_samples: Dict[str, Dict] = {}
 
 # TTS Engine (initialized at startup)
 tts_engine = TTSEngine(
-    api_key=os.getenv("FISH_AUDIO_API_KEY", ""),
+    api_key=os.getenv("OPENAI_API_KEY", ""),
 )
 
 # Output directory for generated audio
@@ -47,14 +46,14 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Initialise Fish Audio SDK session on application startup."""
+    """Initialise OpenAI TTS client on application startup."""
     logger.info("Starting VocalClone API...")
     success = tts_engine.load_model()
     if not success:
         logger.warning(
-            "Fish Audio SDK session not initialised. "
-            "Set the FISH_AUDIO_API_KEY environment variable to enable "
-            "voice cloning."
+            "OpenAI TTS client not initialised. "
+            "Set the OPENAI_API_KEY environment variable to enable "
+            "TTS generation."
         )
     yield
 
@@ -81,7 +80,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_loaded": tts_engine.is_loaded(),
-        "engine": "fish-audio-sdk",
+        "engine": "openai-tts",
     }
 
 
@@ -198,11 +197,6 @@ async def generate_speech(
                 detail="Voice sample not found. Please upload a sample first.",
             )
         reference_bytes = voice_samples[sample_id]["raw_bytes"]
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either a voice sample file or a sample_id.",
-        )
 
     logger.info("Generating speech: lang=%s, text_len=%d", language, len(text))
 

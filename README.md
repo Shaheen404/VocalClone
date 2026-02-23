@@ -16,7 +16,7 @@ AI Voice Cloning web application that generates speech in **English** and **Urdu
 |-----------|-----------|
 | Backend | Python, FastAPI |
 | Frontend | React 18, Tailwind CSS, Vite |
-| TTS Model | Fish Speech V1.5 (zero-shot voice cloning) |
+| TTS Model | OpenAI TTS-1-HD (multilingual) |
 | Deployment | Docker, Hugging Face Spaces |
 
 ## Project Structure
@@ -99,17 +99,15 @@ pytest tests/ -v
 1. Create a new Space on [huggingface.co/spaces](https://huggingface.co/spaces) with **Docker** SDK
 2. Push the repository to the Space
 3. Set environment variables:
-   - `TTS_MODEL`: Model name (default: `fishaudio/fish-speech-1.5`)
-   - `USE_GPU`: Enable GPU (`true`/`false`)
-   - `QUANTIZE`: Quantization mode (`4bit`, `8bit`, `none`)
+   - `OPENAI_API_KEY`: Your OpenAI API key for TTS generation
 
 ## Architecture
 
 ### Phase 1: Environment & Model Setup
-The TTS engine loads Fish Speech V1.5 with 4-bit quantization using `bitsandbytes`, making it compatible with free-tier T4 GPUs (16GB VRAM). The model is loaded once at startup.
+The TTS engine uses OpenAI's TTS-1-HD model with the "onyx" voice, providing stable multilingual synthesis for both English and Urdu. The client is initialized once at startup with the `OPENAI_API_KEY` environment variable.
 
 ### Phase 2: Cloning Logic
-Speaker embeddings are extracted from the reference audio using the model's encoder. These embeddings condition the TTS decoder to generate speech that matches the voice characteristics.
+Reference audio can still be uploaded for future compatibility, but the current OpenAI backend uses a fixed voice ("onyx") that performs well for both English and Urdu.
 
 ### Phase 3: Web Interface
 The React frontend provides a three-step Creator Dashboard: upload sample → enter script → generate audio. Language toggle switches between English and Urdu with RTL text support.

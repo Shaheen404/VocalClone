@@ -13,7 +13,7 @@ class TestTTSEngine:
 
     def test_initialization_no_key(self):
         engine = TTSEngine(api_key="")
-        assert engine.api_key == ""
+        assert engine.api_key is None
         assert engine.is_loaded() is False
 
     def test_normalize_urdu_text(self):
@@ -60,4 +60,6 @@ class TestTTSEngine:
     def test_generate_speech_no_reference(self):
         engine = TTSEngine(api_key="")
         result = engine.generate_speech("Hello", "en")
+        # With OpenAI, reference audio is optional; returns None because
+        # the engine is not loaded (no API key).
         assert result is None
